@@ -20,7 +20,8 @@ class Grid3DAcceptanceMapCreator(BaseAcceptanceMapCreator):
                  min_observation_per_cos_zenith_bin: int = 15,
                  initial_cos_zenith_binning: float = 0.01,
                  max_fraction_pixel_rotation_fov: float = 0.5,
-                 time_resolution_rotation_fov: u.Quantity = 0.1 * u.s) -> None:
+                 time_resolution_rotation_fov: u.Quantity = 0.1 * u.s,
+                 polar: bool = False) -> None:
         """
         Create the class for calculating 3D grid acceptance model
 
@@ -42,6 +43,8 @@ class Grid3DAcceptanceMapCreator(BaseAcceptanceMapCreator):
             For camera frame transformation the maximum size relative to a pixel a rotation is allowed
         time_resolution_rotation_fov : astropy.unit.Quantity, optional
             Time resolution to use for the computation of the rotation of the FoV
+        polar: bool, optional
+            Generate the acceptance map in polar coordinates like MAGIC (exp(-R^2), phi)
         """
 
         # If no exclusion region, default it as an empty list
@@ -62,7 +65,7 @@ class Grid3DAcceptanceMapCreator(BaseAcceptanceMapCreator):
         # Initiate upper instance
         super().__init__(energy_axis, max_offset, spatial_resolution, exclude_regions,
                          min_observation_per_cos_zenith_bin,
-                         initial_cos_zenith_binning, max_fraction_pixel_rotation_fov, time_resolution_rotation_fov)
+                         initial_cos_zenith_binning, max_fraction_pixel_rotation_fov, time_resolution_rotation_fov, polar)
 
     def create_acceptance_map(self, observations: Observations) -> Background3D:
         """
@@ -101,6 +104,7 @@ class Grid3DAcceptanceMapCreator(BaseAcceptanceMapCreator):
         solid_angle = 4. * (np.sin(bin_width_x / 2.) * np.sin(bin_width_y / 2.)) * u.steradian
         data_background = corrected_counts / solid_angle[np.newaxis, :, :] / self.energy_axis.bin_width[:, np.newaxis,
                                                                              np.newaxis] / livetime
+        #data_background = np.swapaxes(data_background, 1, 2)
 
         acceptance_map = Background3D(axes=[self.energy_axis, extended_offset_axis_x, extended_offset_axis_y],
                                       data=data_background.to(u.Unit('s-1 MeV-1 sr-1')))

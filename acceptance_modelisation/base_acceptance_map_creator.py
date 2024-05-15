@@ -16,9 +16,10 @@ from gammapy.makers import MapDatasetMaker, SafeMaskMaker, FoVBackgroundMaker
 from gammapy.maps import WcsNDMap, WcsGeom, Map, MapAxis
 from regions import CircleSkyRegion, SkyRegion
 from scipy.integrate import cumulative_trapezoid
-from scipy.interpolate import interp1d
+from scipy.interpolate import interp1d, NearestNDInterpolator, LinearNDInterpolator
+from scipy.ndimage import gaussian_filter
 
-from .toolbox import compute_rotation_speed_fov
+from .toolbox import compute_rotation_speed_fov, PolarSkyOffsetFrame, EpsilonSkyOffsetFrame
 
 
 class BaseAcceptanceMapCreator(ABC):
@@ -31,7 +32,8 @@ class BaseAcceptanceMapCreator(ABC):
                  min_observation_per_cos_zenith_bin: int = 3,
                  initial_cos_zenith_binning: float = 0.01,
                  max_fraction_pixel_rotation_fov: float = 0.5,
-                 time_resolution_rotation_fov: u.Quantity = 0.1 * u.s) -> None:
+                 time_resolution_rotation_fov: u.Quantity = 0.1 * u.s,
+                 polar: bool = False,) -> None:
         """
         Create the class for calculating radial acceptance model.
 
@@ -53,6 +55,8 @@ class BaseAcceptanceMapCreator(ABC):
             For camera frame transformation the maximum size relative to a pixel a rotation is allowed
         time_resolution_rotation_fov : astropy.units.Quantity, optional
             Time resolution to use for the computation of the rotation of the FoV
+        polar: bool, optional
+            Generate the acceptance map in polar coordinates like MAGIC (exp(-R^2), phi)
         """
 
         # If no exclusion region, default it as an empty list
@@ -72,6 +76,11 @@ class BaseAcceptanceMapCreator(ABC):
         self.center_map = SkyCoord(ra=0. * u.deg, dec=0. * u.deg, frame='icrs')
         self.geom = WcsGeom.create(skydir=self.center_map, npix=(self.n_bins_map, self.n_bins_map),
                                    binsz=self.spatial_bin_size, frame="icrs", axes=[self.energy_axis])
+        if polar:
+            self.geom = WcsGeom.create(skydir=SkyCoord(ra=0 * u.deg, dec=0 * u.deg, frame='icrs'), binsz=(20,1),
+                                       width=(360, 28), frame="icrs", axes=[self.energy_axis], refpix=(9.5,0))
+            self.geom_grid = WcsGeom.create(skydir=self.center_map, npix=(self.n_bins_map, self.n_bins_map),
+                                       binsz=self.spatial_bin_size, frame="icrs", axes=[self.energy_axis])
         logging.info(
             'Computation will be made with a bin size of {:.3f} arcmin'.format(
                 self.spatial_bin_size.to_value(u.arcmin)))
@@ -79,6 +88,8 @@ class BaseAcceptanceMapCreator(ABC):
         # Store rotation computation parameters
         self.max_fraction_pixel_rotation_fov = max_fraction_pixel_rotation_fov
         self.time_resolution_rotation_fov = time_resolution_rotation_fov
+
+        self.polar = polar
 
     def _transform_obs_to_camera_frame(self, obs: Observation) -> Tuple[Observation, List[SkyRegion]]:
         """
@@ -109,15 +120,24 @@ class BaseAcceptanceMapCreator(ABC):
                                                    obstime=obs.events.time,
                                                    location=obs.observatory_earth_location),
                                       rotation=[0., ] * len(obs.events.time) * u.deg)
-        events_camera_frame = events_altaz.transform_to(camera_frame)
+
+        if self.polar:
+            polar_frame = PolarSkyOffsetFrame(origin=camera_frame.origin)
+            events_camera_polar_frame = events_altaz.transform_to(polar_frame)
+
+            epsilon_frame = EpsilonSkyOffsetFrame(origin=polar_frame.origin)
+            events_camera_frame = events_camera_polar_frame.transform_to(epsilon_frame)
+        else:
+            events_camera_frame = events_altaz.transform_to(camera_frame)
 
         # Formatting data for the output
         camera_frame_events = obs.events.copy()
-        camera_frame_events.table['RA'] = events_camera_frame.lon
-        camera_frame_events.table['DEC'] = events_camera_frame.lat
+        camera_frame_events.table['RA'] = events_camera_frame.lon if not self.polar else events_camera_frame.phi
+        camera_frame_events.table['DEC'] = events_camera_frame.lat if not self.polar else events_camera_frame.epsilon
         camera_frame_obs_info = copy.deepcopy(obs.obs_info)
-        camera_frame_obs_info['RA_PNT'] = 0.
-        camera_frame_obs_info['DEC_PNT'] = 0.
+        camera_frame_obs_info['RA_PNT'] = 0. if not self.polar else 0
+        camera_frame_obs_info['DEC_PNT'] = 0. if not self.polar else 0 # solve sqrt(pi)/2 erf(x) = 0.5
+
         obs_camera_frame = Observation(obs_id=obs.obs_id,
                                        obs_info=camera_frame_obs_info,
                                        events=camera_frame_events,
@@ -202,14 +222,16 @@ class BaseAcceptanceMapCreator(ABC):
         if add_bkg:
             maker = MapDatasetMaker(selection=["counts", "background"])
 
-        maker_safe_mask = SafeMaskMaker(methods=["offset-max"], offset_max=self.max_offset)
-
-        geom_image = geom.to_image()
+        #maker_safe_mask = SafeMaskMaker(methods=["offset-max"], offset_max=self.max_offset)
+        if self.polar:
+            geom_image = self.geom_grid.to_image()
+        else:
+            geom_image = geom.to_image()
         exclusion_mask = ~geom_image.region_mask(exclude_regions) if len(exclude_regions) > 0 else ~Map.from_geom(
             geom_image)
 
         map_obs = maker.run(MapDataset.create(geom=geom), obs)
-        map_obs = maker_safe_mask.run(map_obs, obs)
+        #map_obs = maker_safe_mask.run(map_obs, obs)
 
         return map_obs, exclusion_mask
 
@@ -320,9 +342,15 @@ class BaseAcceptanceMapCreator(ABC):
         livetime : astropy.unit.Unit
             The total exposure time for the model
         """
-        count_map_background = WcsNDMap(geom=self.geom)
-        exp_map_background = WcsNDMap(geom=self.geom, unit=u.s)
-        exp_map_background_total = WcsNDMap(geom=self.geom, unit=u.s)
+        if self.polar:
+            count_map_background = WcsNDMap(geom=self.geom_grid)
+            exp_map_background = WcsNDMap(geom=self.geom_grid, unit=u.s)
+            exp_map_background_total = WcsNDMap(geom=self.geom_grid, unit=u.s)
+        else:
+            count_map_background = WcsNDMap(geom=self.geom)
+            exp_map_background = WcsNDMap(geom=self.geom, unit=u.s)
+            exp_map_background_total = WcsNDMap(geom=self.geom, unit=u.s)
+
         livetime = 0. * u.s
 
         with erfa_astrom.set(ErfaAstromInterpolator(1000 * u.s)):
@@ -332,19 +360,72 @@ class BaseAcceptanceMapCreator(ABC):
                     cut_obs = obs.select_time(Time([time_interval[i], time_interval[i + 1]]))
                     count_map_obs, exclusion_mask = self._create_camera_map(cut_obs)
 
+                    if self.polar:
+                        map_coords = count_map_obs.counts.geom.to_image().get_coord()
+                        pointing_altaz = obs.get_pointing_altaz(Time(time_interval[i]))
+                        coords_eps = SkyCoord(epsilon=map_coords.lat, phi=map_coords.lon, r=1, frame=EpsilonSkyOffsetFrame(origin=pointing_altaz))
+
+                        polar_frame = PolarSkyOffsetFrame(origin=pointing_altaz)
+                        coords_polar = coords_eps.transform_to(polar_frame)
+                        sky_offset_frame = SkyOffsetFrame(origin=pointing_altaz)
+                        coords_altaz = coords_polar.transform_to(sky_offset_frame)
+                        lon = coords_altaz.lon.to_value('deg').ravel()
+                        lat = coords_altaz.lat.to_value('deg').ravel()
+
+                        map_coords_interp = self.geom_grid.to_image().get_coord()
+                        skycoord_interp = map_coords_interp.skycoord
+                        sky_offset_frame_interp = SkyOffsetFrame(origin=SkyCoord('0 deg', '0 deg', frame='icrs'))
+                        skycoord_interp = skycoord_interp.transform_to(sky_offset_frame_interp)
+
+                        lon_interp = skycoord_interp.lon.to_value('deg')
+                        lat_interp = skycoord_interp.lat.to_value('deg')
+
+
+
+
+                        gridded_data = []
+                        for energy_bin_data in count_map_obs.counts.data:
+                            interpolator = LinearNDInterpolator(list(zip(lon, lat)), energy_bin_data.ravel(), fill_value=0.0)
+                            interp_data = interpolator(lon_interp, lat_interp)
+
+                            smeared_data = gaussian_filter(interp_data, sigma=1)
+                            gridded_data.append(smeared_data)
+                            #gridded_data.append(interp_data)
+
+
+
                     exp_map_obs = MapDataset.create(geom=count_map_obs.geoms['geom'])
                     exp_map_obs_total = MapDataset.create(geom=count_map_obs.geoms['geom'])
                     exp_map_obs.counts.data = cut_obs.observation_live_time_duration.value
                     exp_map_obs_total.counts.data = cut_obs.observation_live_time_duration.value
 
-                    for j in range(count_map_obs.counts.data.shape[0]):
-                        count_map_obs.counts.data[j, :, :] = count_map_obs.counts.data[j, :, :] * exclusion_mask
-                        exp_map_obs.counts.data[j, :, :] = exp_map_obs.counts.data[j, :, :] * exclusion_mask
+                    if self.polar:
+                        #exp_data_total, _, _ = np.histogram2d(lon, lat, bins=self.n_bins_map, weights=cut_obs.observation_live_time_duration.value*np.ones_like(lon))
 
-                    count_map_background.data += count_map_obs.counts.data
-                    exp_map_background.data += exp_map_obs.counts.data
-                    exp_map_background_total.data += exp_map_obs_total.counts.data
-                    livetime += cut_obs.observation_live_time_duration
+                        interpolator = NearestNDInterpolator(list(zip(lon, lat)), cut_obs.observation_live_time_duration.value*np.ones_like(lon))
+                        exp_data_total = interpolator(lon_interp, lat_interp)
+
+                        exp_data = copy.deepcopy(exp_data_total)
+                        for j in range(len(gridded_data)):
+                            gridded_data[j][:, :] = gridded_data[j][:, :] * exclusion_mask
+
+                        exp_data = exp_data * exclusion_mask
+
+                        count_map_background.data += gridded_data
+                        exp_map_background.data += exp_data[None, ...]
+                        exp_map_background_total.data += exp_data_total
+                        livetime += cut_obs.observation_live_time_duration
+
+
+                    else:
+                        for j in range(count_map_obs.counts.data.shape[0]):
+                            count_map_obs.counts.data[j, :, :] = count_map_obs.counts.data[j, :, :] * exclusion_mask
+                            exp_map_obs.counts.data[j, :, :] = exp_map_obs.counts.data[j, :, :] * exclusion_mask
+
+                        count_map_background.data += count_map_obs.counts.data
+                        exp_map_background.data += exp_map_obs.counts.data
+                        exp_map_background_total.data += exp_map_obs_total.counts.data
+                        livetime += cut_obs.observation_live_time_duration
 
         return count_map_background, exp_map_background, exp_map_background_total, livetime
 
