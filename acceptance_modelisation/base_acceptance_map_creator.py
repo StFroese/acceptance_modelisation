@@ -77,8 +77,8 @@ class BaseAcceptanceMapCreator(ABC):
         self.geom = WcsGeom.create(skydir=self.center_map, npix=(self.n_bins_map, self.n_bins_map),
                                    binsz=self.spatial_bin_size, frame="icrs", axes=[self.energy_axis])
         if polar:
-            self.geom = WcsGeom.create(skydir=SkyCoord(ra=0 * u.deg, dec=0 * u.deg, frame='icrs'), binsz=(20,0.5),
-                                       width=(360, 28), frame="icrs", axes=[self.energy_axis], refpix=(9.5,0))
+            self.geom = WcsGeom.create(skydir=SkyCoord(ra=0 * u.deg, dec=0 * u.deg, frame='icrs'), binsz=(30,0.5),
+                                       width=(360, 28), frame="icrs", axes=[self.energy_axis], refpix=(6.49, 0))
             self.geom_grid = WcsGeom.create(skydir=self.center_map, npix=(self.n_bins_map, self.n_bins_map),
                                        binsz=self.spatial_bin_size, frame="icrs", axes=[self.energy_axis])
         logging.info(
