@@ -8,8 +8,7 @@ from astropy.coordinates.representation import (
     PhysicsSphericalRepresentation,
     PhysicsSphericalDifferential,
 )
-from astropy.coordinates.matrix_utilities import (rotation_matrix,
-                                                  matrix_transpose)
+from astropy.coordinates.matrix_utilities import rotation_matrix, matrix_transpose
 
 from astropy.coordinates.transformations import (
     DynamicMatrixTransform,
@@ -20,9 +19,11 @@ from astropy.coordinates.attributes import CoordinateAttribute, QuantityAttribut
 from astropy.coordinates.baseframe import frame_transform_graph
 
 
-def compute_rotation_speed_fov(time_evaluation: Time,
-                               pointing_sky: SkyCoord,
-                               observatory_earth_location: EarthLocation) -> u.Quantity:
+def compute_rotation_speed_fov(
+    time_evaluation: Time,
+    pointing_sky: SkyCoord,
+    observatory_earth_location: EarthLocation,
+) -> u.Quantity:
     """
     Compute the rotation speed of the FOV for a given evaluation time.
 
@@ -40,19 +41,25 @@ def compute_rotation_speed_fov(time_evaluation: Time,
     rotation_speed : astropy.units.Quantity
         The rotation speed of the FOV at the given time and pointing direction.
     """
-    pointing_altaz = pointing_sky.transform_to(AltAz(obstime=time_evaluation,
-                                                     location=observatory_earth_location))
-    omega_earth = OMEGA_EARTH*u.rad
-    omega = omega_earth * np.cos(observatory_earth_location.lat) * np.cos(pointing_altaz.az) / np.cos(
-        pointing_altaz.alt)
+    pointing_altaz = pointing_sky.transform_to(
+        AltAz(obstime=time_evaluation, location=observatory_earth_location)
+    )
+    omega_earth = OMEGA_EARTH * u.rad
+    omega = (
+        omega_earth
+        * np.cos(observatory_earth_location.lat)
+        * np.cos(pointing_altaz.az)
+        / np.cos(pointing_altaz.alt)
+    )
     return omega
 
 
 class PolarSkyOffsetFrame(SkyOffsetFrame, AltAz):
     # see https://github.com/astropy/astropy/pull/12845
     origin = CoordinateAttribute(
-            frame=AltAz, default=None,
-        )
+        frame=AltAz,
+        default=None,
+    )
 
     _default_representation = PhysicsSphericalRepresentation
 
@@ -65,10 +72,9 @@ def reference_to_skyoffset_altaz_polar(reference_frame, skyoffset_frame):
     # relative to the origin.
 
     origin = skyoffset_frame.origin.represent_as(PhysicsSphericalRepresentation)
-    mat1 = rotation_matrix(-skyoffset_frame.rotation, 'z')
-    mat2 = rotation_matrix(origin.theta, 'y')
-    mat3 = rotation_matrix(origin.phi, 'z')
-
+    mat1 = rotation_matrix(-skyoffset_frame.rotation, "z")
+    mat2 = rotation_matrix(origin.theta, "y")
+    mat3 = rotation_matrix(origin.phi, "z")
 
     return mat1 @ mat2 @ mat3
 
@@ -85,17 +91,23 @@ def skyoffset_to_reference_polar_altaz(skyoffset_coord, reference_frame):
 
 class EpsilonSkyOffsetFrame(SkyOffsetFrame, AltAz):
     origin = CoordinateAttribute(
-            frame=AltAz, default=None,
-        )
+        frame=AltAz,
+        default=None,
+    )
 
     _default_representation = PhysicsSphericalRepresentation
 
     frame_specific_representation_info = {
-        PhysicsSphericalRepresentation: [RepresentationMapping('theta', 'epsilon'),
-                                    RepresentationMapping('phi', 'phi')],
+        PhysicsSphericalRepresentation: [
+            RepresentationMapping("theta", "epsilon"),
+            RepresentationMapping("phi", "phi"),
+        ],
     }
 
-@frame_transform_graph.transform(FunctionTransform, PolarSkyOffsetFrame, EpsilonSkyOffsetFrame)
+
+@frame_transform_graph.transform(
+    FunctionTransform, PolarSkyOffsetFrame, EpsilonSkyOffsetFrame
+)
 def reference_to_skyoffset_polar_eps(reference_frame, skyoffset_frame):
     """Convert a reference coordinate to an sky offset frame."""
 
@@ -106,15 +118,18 @@ def reference_to_skyoffset_polar_eps(reference_frame, skyoffset_frame):
     phi = reference_frame.phi
     r = reference_frame.r
 
-    #epsilon = np.exp(-theta.deg**2) * u.deg # it's not an angle anymore, anyways...
+    # epsilon = np.exp(-(theta.deg**2)) * u.deg  # it's not an angle anymore, anyways...
     epsilon = np.pi * theta.deg**2 * u.deg
+    # epsilon = theta.deg * u.deg
 
     representation = PhysicsSphericalRepresentation(phi=phi, theta=epsilon, r=r)
 
-
     return skyoffset_frame.realize_frame(representation)
 
-@frame_transform_graph.transform(FunctionTransform, EpsilonSkyOffsetFrame, PolarSkyOffsetFrame)
+
+@frame_transform_graph.transform(
+    FunctionTransform, EpsilonSkyOffsetFrame, PolarSkyOffsetFrame
+)
 def reference_to_skyoffset_eps_polar(reference_frame, skyoffset_frame):
     """Convert a reference coordinate to an sky offset frame."""
 
@@ -125,9 +140,13 @@ def reference_to_skyoffset_eps_polar(reference_frame, skyoffset_frame):
     phi = reference_frame.phi
     r = reference_frame.r
 
-    #theta = np.sqrt(np.log(1/epsilon.deg)) * u.deg
-    theta = np.sqrt(epsilon.deg/np.pi) * u.deg
+    # theta = np.sqrt(np.log(1/epsilon.deg)) * u.deg
+    theta = np.sqrt(epsilon.deg / np.pi) * u.deg
+    # theta = epsilon.deg * u.deg
+    # theta = np.sqrt(-np.log(epsilon.deg)) * u.deg
 
     representation = PhysicsSphericalRepresentation(phi=phi, theta=theta, r=r)
+    # print(representation)
+    # print(skyoffset_frame.realize_frame(representation))
 
     return skyoffset_frame.realize_frame(representation)
