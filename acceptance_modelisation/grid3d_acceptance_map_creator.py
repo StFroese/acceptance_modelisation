@@ -134,7 +134,7 @@ class Grid3DAcceptanceMapCreator(BaseAcceptanceMapCreator):
         )
 
         # corrected_counts = gaussian_filter(
-        #     corrected_counts, sigma=2, mode="reflect", axes=[1, 2]
+        #     corrected_counts, sigma=1, mode="reflect", axes=[1, 2]
         # )
 
         # import matplotlib.pyplot as plt

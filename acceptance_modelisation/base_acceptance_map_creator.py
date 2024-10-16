@@ -97,7 +97,7 @@ class BaseAcceptanceMapCreator(ABC):
         if polar:
             self.geom = WcsGeom.create(
                 skydir=SkyCoord(ra=0 * u.deg, dec=0 * u.deg, frame="icrs"),
-                binsz=(30, 0.5),
+                binsz=(30, 0.4),
                 width=(360, 28),
                 frame="icrs",
                 axes=[self.energy_axis],
@@ -142,9 +142,7 @@ class BaseAcceptanceMapCreator(ABC):
         """
 
         # Transform to altaz frame
-        altaz_frame = AltAz(
-            obstime=obs.events.time, location=obs.observatory_earth_location
-        )
+        altaz_frame = AltAz(obstime=obs.events.time, location=obs.meta.location)
         events_altaz = obs.events.radec.transform_to(altaz_frame)
         pointing_altaz = obs.get_pointing_icrs(obs.tmid).transform_to(altaz_frame)
 
@@ -154,7 +152,7 @@ class BaseAcceptanceMapCreator(ABC):
                 alt=pointing_altaz.alt,
                 az=pointing_altaz.az,
                 obstime=obs.events.time,
-                location=obs.observatory_earth_location,
+                location=obs.meta.location,
             ),
             rotation=[
                 0.0,
@@ -193,12 +191,12 @@ class BaseAcceptanceMapCreator(ABC):
             gti=obs.gti,
             aeff=obs.aeff,
         )
-        obs_camera_frame._location = obs.observatory_earth_location
+        obs_camera_frame._location = obs.meta.location
 
         # Compute the exclusion region in camera frame for the average time
         average_alt_az_frame = AltAz(
             obstime=obs_camera_frame.tmid,
-            location=obs_camera_frame.observatory_earth_location,
+            location=obs_camera_frame.meta.location,
         )
         average_alt_az_pointing = obs.get_pointing_icrs(obs.tmid).transform_to(
             average_alt_az_frame
@@ -397,7 +395,7 @@ class BaseAcceptanceMapCreator(ABC):
         )
         time_axis = np.linspace(obs.tstart, obs.tstop, num=n_bin)
         rotation_speed_fov = compute_rotation_speed_fov(
-            time_axis, obs.get_pointing_icrs(obs.tmid), obs.observatory_earth_location
+            time_axis, obs.get_pointing_icrs(obs.tmid), obs.meta.location
         )
         rotation_fov = (
             cumulative_trapezoid(
@@ -513,7 +511,7 @@ class BaseAcceptanceMapCreator(ABC):
                             # plt.imshow(energy_bin_data)
                             # plt.show()
                             # energy_bin_data = gaussian_filter(
-                            #     energy_bin_data, sigma=2, mode="reflect", axes=0
+                            #     energy_bin_data, sigma=1, mode="reflect", axes=0
                             # )
                             # plt.imshow(energy_bin_data)
                             # plt.show()
@@ -542,6 +540,12 @@ class BaseAcceptanceMapCreator(ABC):
                             # print(np.sum(interp_data[interp_data != np.nan]))
                             # print(norm)
                             # import matplotlib.pyplot as plt
+                            #
+                            # plt.plot(lon, lat, "x")
+                            # plt.show()
+                            # plt.plot(lon_interp, lat_interp, "x")
+                            # plt.show()
+
                             #
                             # plt.imshow(energy_bin_data)
                             # plt.show()
