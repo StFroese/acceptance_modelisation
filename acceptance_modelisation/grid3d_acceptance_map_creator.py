@@ -2,7 +2,7 @@ from typing import List, Optional
 
 import astropy.units as u
 import numpy as np
-from gammapy.data import Observations
+from gammapy.data import Observation, Observations
 from gammapy.irf import Background3D, FoVAlignment
 from gammapy.maps import MapAxis
 from regions import SkyRegion
@@ -24,6 +24,7 @@ class Grid3DAcceptanceMapCreator(BaseAcceptanceMapCreator):
         max_fraction_pixel_rotation_fov: float = 0.5,
         time_resolution_rotation_fov: u.Quantity = 0.1 * u.s,
         polar: bool = False,
+        rotate_to_obs: Optional[Observation] = None,
     ) -> None:
         """
         Create the class for calculating 3D grid acceptance model
@@ -78,6 +79,7 @@ class Grid3DAcceptanceMapCreator(BaseAcceptanceMapCreator):
             max_fraction_pixel_rotation_fov,
             time_resolution_rotation_fov,
             polar,
+            rotate_to_obs,
         )
 
     def create_acceptance_map(self, observations: Observations) -> Background3D:

@@ -44,6 +44,7 @@ class BaseAcceptanceMapCreator(ABC):
         max_fraction_pixel_rotation_fov: float = 0.5,
         time_resolution_rotation_fov: u.Quantity = 0.1 * u.s,
         polar: bool = False,
+        rotate_to_obs: Optional[Observation] = None,
     ) -> None:
         """
         Create the class for calculating radial acceptance model.
@@ -97,11 +98,11 @@ class BaseAcceptanceMapCreator(ABC):
         if polar:
             self.geom = WcsGeom.create(
                 skydir=SkyCoord(ra=0 * u.deg, dec=0 * u.deg, frame="icrs"),
-                binsz=(30, 0.4),
-                width=(360, 28),
+                binsz=(1, 0.1),
+                width=(360, 1),
                 frame="icrs",
                 axes=[self.energy_axis],
-                refpix=(6.49, 0),
+                refpix=(180.499, 0),
             )
             self.geom_grid = WcsGeom.create(
                 skydir=self.center_map,
@@ -121,6 +122,7 @@ class BaseAcceptanceMapCreator(ABC):
         self.time_resolution_rotation_fov = time_resolution_rotation_fov
 
         self.polar = polar
+        self.rotate_to_obs = rotate_to_obs
 
     def _transform_obs_to_camera_frame(
         self, obs: Observation
@@ -142,8 +144,24 @@ class BaseAcceptanceMapCreator(ABC):
         """
 
         # Transform to altaz frame
-        altaz_frame = AltAz(obstime=obs.events.time, location=obs.meta.location)
-        events_altaz = obs.events.radec.transform_to(altaz_frame)
+        # from gammapy.data import ObservationFilter
+        # from regions import CircleAnnulusSkyRegion
+        #
+        # region = CircleAnnulusSkyRegion(
+        #     center=self.exclude_regions[0].center,
+        #     inner_radius=self.exclude_regions[0].radius,
+        #     outer_radius=10 * u.deg,
+        # )
+        #
+        # regions_filter = {
+        #     "type": "sky_region",
+        #     "opts": dict(regions=region),
+        # }
+        # obs_filter = ObservationFilter(event_filters=[regions_filter])
+        # obs.obs_filter = obs_filter
+
+        altaz_frame = obs.events.altaz_frame
+        events_altaz = obs.events.altaz
         pointing_altaz = obs.get_pointing_icrs(obs.tmid).transform_to(altaz_frame)
 
         # Rotation to transform to camera frame
@@ -169,6 +187,38 @@ class BaseAcceptanceMapCreator(ABC):
             events_camera_frame = events_camera_polar_frame.transform_to(epsilon_frame)
         else:
             events_camera_frame = events_altaz.transform_to(camera_frame)
+
+        # Additional rotation to specific obs
+        if self.rotate_to_obs is not None:
+            pointing_offset_frame = SkyCoord(
+                lon=[0] * len(obs.events.time) * u.deg,
+                lat=[0] * len(obs.events.time) * u.deg,
+                frame=camera_frame,
+            )
+            sep = pointing_offset_frame.separation(events_camera_frame)
+            pos_angle = pointing_offset_frame.position_angle(events_camera_frame)
+
+            az_obs = self.rotate_to_obs.get_pointing_altaz(self.rotate_to_obs.tmid).az
+            rot_angle = az_obs - pointing_altaz.az
+
+            events_camera_frame = pointing_offset_frame.directional_offset_by(
+                position_angle=pos_angle + rot_angle, separation=sep
+            )
+
+            # import matplotlib.pyplot as plt
+            #
+            # plt.plot(sep)
+            # plt.show()
+            #
+            # plt.plot(events_camera_frame.lon.deg, events_camera_frame.lat.deg, "o")
+            # plt.plot(
+            #     events_camera_frame.lon.deg,
+            #     events_camera_frame.lat.deg,
+            #     "o",
+            #     alpha=0.1,
+            # )
+            # plt.plot(pointing_offset_frame.lon.deg, pointing_offset_frame.lat.deg, "o")
+            # plt.show()
 
         # Formatting data for the output
         camera_frame_events = obs.events.copy()
@@ -244,6 +294,39 @@ class BaseAcceptanceMapCreator(ABC):
                 center_coordinate_camera_frame = center_coordinate_altaz.transform_to(
                     camera_frame
                 )
+                if self.rotate_to_obs is not None:
+                    center_of_frame = pointing_altaz.transform_to(camera_frame)
+                    rot_angle = (
+                        self.rotate_to_obs.get_pointing_altaz(
+                            self.rotate_to_obs.tmid
+                        ).az
+                        - pointing_altaz.az
+                    )
+                    sep = center_of_frame.separation(center_coordinate_camera_frame)
+                    pos_angle = center_of_frame.position_angle(
+                        center_coordinate_camera_frame
+                    )
+                    # import matplotlib.pyplot as plt
+                    #
+                    # plt.plot(center_of_frame.lon.deg, center_of_frame.lat.deg, "ro")
+                    # plt.plot(
+                    #     center_coordinate_camera_frame.lon.deg,
+                    #     center_coordinate_camera_frame.lat.deg,
+                    #     "bo",
+                    # )
+                    center_coordinate_camera_frame = (
+                        center_of_frame.directional_offset_by(
+                            position_angle=pos_angle + rot_angle, separation=sep
+                        )
+                    )
+                    #
+                    # plt.plot(
+                    #     center_coordinate_camera_frame.lon.deg,
+                    #     center_coordinate_camera_frame.lat.deg,
+                    #     "go",
+                    # )
+                    # plt.show()
+
                 center_coordinate_camera_frame_arb = SkyCoord(
                     ra=center_coordinate_camera_frame.lon[0],
                     dec=center_coordinate_camera_frame.lat[0],
@@ -464,11 +547,15 @@ class BaseAcceptanceMapCreator(ABC):
                     cut_obs = obs.select_time(
                         Time([time_interval[i], time_interval[i + 1]])
                     )
+                    if len(cut_obs.events.time) == 0:
+                        continue
+
                     count_map_obs, exclusion_mask = self._create_camera_map(cut_obs)
 
                     if self.polar:
                         map_coords = count_map_obs.counts.geom.to_image().get_coord()
                         pointing_altaz = obs.get_pointing_altaz(Time(time_interval[i]))
+                        pointing_icrs = obs.get_pointing_icrs(Time(time_interval[i]))
                         coords_eps = SkyCoord(
                             epsilon=map_coords.lat,
                             phi=map_coords.lon,
@@ -486,15 +573,60 @@ class BaseAcceptanceMapCreator(ABC):
 
                         map_coords_interp = self.geom_grid.to_image().get_coord()
                         skycoord_interp = map_coords_interp.skycoord
-                        sky_offset_frame_interp = SkyOffsetFrame(
-                            origin=SkyCoord("0 deg", "0 deg", frame="icrs")
-                        )
+                        # print(skycoord_interp)
+                        origin = SkyCoord("0 deg", "0 deg", frame="icrs")
+                        sky_offset_frame_interp = SkyOffsetFrame(origin=origin)
+                        # polar_frame_interp = PolarSkyOffsetFrame(origin=origin)
+                        # eps_frame_interp = EpsilonSkyOffsetFrame()
+                        # lon_interp = skycoord_interp.lon.to_value("deg")
+                        # lat_interp = skycoord_interp.lat.to_value("deg")
                         skycoord_interp = skycoord_interp.transform_to(
                             sky_offset_frame_interp
                         )
-
-                        lon_interp = skycoord_interp.lon.to_value("deg")
-                        lat_interp = skycoord_interp.lat.to_value("deg")
+                        # print(skycoord_interp)
+                        skycoord_offset_interp = SkyCoord(
+                            lat=skycoord_interp.lat,
+                            lon=skycoord_interp.lon,
+                            frame=sky_offset_frame,
+                        )
+                        # print(skycoord_offset_interp)
+                        skycoord_polar_interp = skycoord_offset_interp.transform_to(
+                            polar_frame
+                        )
+                        # print(skycoord_polar_interp)
+                        skycoord_eps_interp = skycoord_offset_interp.transform_to(
+                            EpsilonSkyOffsetFrame(origin=pointing_altaz)
+                        )
+                        # print(skycoord_eps_interp)
+                        # import matplotlib.pyplot as plt
+                        #
+                        # plt.plot(
+                        #     skycoord_eps_interp.phi.deg,
+                        #     skycoord_eps_interp.epsilon.deg,
+                        #     "x",
+                        # )
+                        # plt.show()
+                        # plt.plot(
+                        #     coords_eps.phi.deg,
+                        #     coords_eps.epsilon.deg,
+                        #     "x",
+                        # )
+                        # plt.show()
+                        # skycoord_interp = skycoord_interp.transform_to(
+                        #     polar_frame_interp
+                        # )
+                        # print(skycoord_interp)
+                        # skycoord_polar = PolarSkyOffsetFrame(
+                        #     origin=SkyCoord("0 deg", "0 deg", frame="icrs")
+                        # )
+                        # skycoord_interp = skycoord_interp.transform_to(skycoord_polar)
+                        # skycoord_interp = skycoord_interp.transform_to(
+                        #     EpsilonSkyOffsetFrame(origin=pointing_altaz)
+                        # )
+                        #
+                        # phi_interp = skycoord_interp.phi.to_value("deg")
+                        # eps_interp = skycoord_interp.epsilon.to_value("deg")
+                        # print(phi_interp, eps_interp)
 
                         gridded_data = []
                         for energy_bin_data in count_map_obs.counts.data:
@@ -523,12 +655,26 @@ class BaseAcceptanceMapCreator(ABC):
                             # plt.plot(lon, lat, "x")
                             # plt.show()
                             interpolator = NearestNDInterpolator(
-                                list(zip(lon, lat)),
+                                # list(zip(lon, lat)),
+                                list(
+                                    zip(
+                                        coords_eps.phi.deg.ravel(),
+                                        coords_eps.epsilon.deg.ravel(),
+                                    )
+                                ),
                                 energy_bin_data.ravel(),
                                 # fill_value=0.0,
                             )
+                            # import matplotlib.pyplot as plt
+                            #
+                            # plt.plot(lon, lat, "x")
+                            # plt.show()
 
-                            interp_data = interpolator(lon_interp, lat_interp)
+                            # interp_data = interpolator(lon_interp, lat_interp)
+                            interp_data = interpolator(
+                                skycoord_eps_interp.phi.deg,
+                                skycoord_eps_interp.epsilon.deg,
+                            )
 
                             norm_before = np.sum(energy_bin_data)
                             norm_now = np.sum(interp_data)
@@ -567,7 +713,7 @@ class BaseAcceptanceMapCreator(ABC):
                             # plt.imshow(smeared_data)
                             # plt.show()
 
-                            smeared_data[lon_interp**2 + lat_interp**2 > 9] = 0
+                            # smeared_data[lon_interp**2 + lat_interp**2 > 9] = 0
                             gridded_data.append(smeared_data)
                             # import matplotlib.pyplot as plt
                             #
@@ -578,6 +724,7 @@ class BaseAcceptanceMapCreator(ABC):
                     if self.polar:
                         exp_map_obs = MapDataset.create(geom=self.geom_grid)
                         exp_map_obs_total = MapDataset.create(geom=self.geom_grid)
+
                     else:
                         exp_map_obs = MapDataset.create(
                             geom=count_map_obs.geoms["geom"]

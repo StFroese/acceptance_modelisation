@@ -117,9 +117,11 @@ def reference_to_skyoffset_polar_eps(reference_frame, skyoffset_frame):
     theta = reference_frame.theta
     phi = reference_frame.phi
     r = reference_frame.r
-
-    # epsilon = np.exp(-(theta.deg**2)) * u.deg  # it's not an angle anymore, anyways...
-    epsilon = np.pi * theta.deg**2 * u.deg
+    sigma = 2
+    epsilon = (
+        np.exp(-(theta.deg**2) / sigma**2) * u.deg
+    )  # it's not an angle anymore, anyways...
+    # epsilon = np.pi * theta.deg**2 * u.deg
     # epsilon = theta.deg * u.deg
 
     representation = PhysicsSphericalRepresentation(phi=phi, theta=epsilon, r=r)
@@ -141,9 +143,12 @@ def reference_to_skyoffset_eps_polar(reference_frame, skyoffset_frame):
     r = reference_frame.r
 
     # theta = np.sqrt(np.log(1/epsilon.deg)) * u.deg
-    theta = np.sqrt(epsilon.deg / np.pi) * u.deg
+    # theta = np.sqrt(epsilon.deg / np.pi) * u.deg
     # theta = epsilon.deg * u.deg
     # theta = np.sqrt(-np.log(epsilon.deg)) * u.deg
+    EPS = 0
+    sigma = 2
+    theta = np.sqrt(-np.log(epsilon.deg + EPS) * sigma**2) * u.deg
 
     representation = PhysicsSphericalRepresentation(phi=phi, theta=theta, r=r)
     # print(representation)
